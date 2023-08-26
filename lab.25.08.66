@@ -1,0 +1,166 @@
+#include <ESP8266WiFi.h>
+#include <ESP8266HTTPClient.h>
+#include <PubSubClient.h> //โหลด
+#include <ArduinoJson.h>  // Required version 5.xx
+
+// Telemetry WiFi
+const char* telemetry_ssid = "KBU-WiFi";
+const char* telemetry_password = "";
+String loginURL = "http://10.29.0.1/login?username=630406400562&password=1103703298828";
+
+
+
+
+// Config MQTT Server
+#define mqtt_server "10.22.5.149"
+#define mqtt_port 1883
+#define mqtt_user "ops"
+#define mqtt_password "ops2022"
+#define mqtt_client_id "kanthidakorn"
+#define mqtt_topic "/kanthidakorn"
+
+static unsigned long lastPublish;
+// Built-in LED
+#define LED_BUILTIN 2
+#define R_rate A0 
+
+WiFiClient espClient;
+PubSubClient client(espClient);
+
+
+//==========================================================
+void setup() {
+  // Initialize serial port
+  Serial.begin(115200);
+  delay(100);
+  Serial.println("Preparing...");
+
+  pinMode(LED_BUILTIN, OUTPUT);
+  pinMode(R_rate,INPUT);
+  
+  client.setServer(mqtt_server, mqtt_port);
+  client.setCallback(callback);
+
+  Serial.println("Setup completed.");
+
+}
+
+//==========================================================
+void loop() {
+  setup_wifi();
+  if (!client.connected()) {
+    reconnect();
+  }
+  client.loop(); //mqtt loop wait event
+  int val = analogRead(R_rate);
+  SendDataToMqtt(val,"sensor");
+}
+
+
+
+void callback(char* topic, byte* payload, unsigned int length) {
+  String msg = "";
+  int i=0;
+  String cmd;
+  
+  Serial.print("Message arrived [");
+  Serial.print(topic);
+  Serial.println("] ");
+  while (i<length) msg += (char)payload[i++];
+  Serial.println(msg);  
+  StaticJsonBuffer<300> JSONBuffer;
+  JsonObject& parsed = JSONBuffer.parseObject(msg);
+  if (!parsed.success()) {
+    Serial.println("Parsing failed");
+    delay(1000);
+    return;
+  }
+  String msg_mode = parsed["mode"]; //Get message mode
+  Serial.println("msg_modena = " + msg_mode);
+ 
+
+    if (msg_mode == "ledon") {
+      Serial.println("Turning on LED...");
+      digitalWrite(LED_BUILTIN, LOW);
+      delay(100);
+      
+    } else if (msg_mode == "ledoff") {
+      Serial.println("Turning off LED...");
+      digitalWrite(LED_BUILTIN, HIGH);
+      delay(100);
+    }
+ 
+}
+
+void setup_wifi() {
+  if (WiFi.status() != WL_CONNECTED) {
+    delay(200);
+    Serial.println();
+    Serial.printf("Connecting to [%s]", telemetry_ssid);
+    WiFi.begin(telemetry_ssid, telemetry_password);
+    connectWiFi();
+  }
+}
+
+void connectWiFi() {
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+  Serial.println();
+  Serial.println("- WiFi connected");
+  Serial.print("- IP address: ");
+  Serial.println(WiFi.localIP());
+  Serial.println("  Trying to login to hotspot . . .");
+  WiFiClient wfclient;
+  HTTPClient http;
+  if (http.begin(wfclient, loginURL)) {
+    int httpCode = http.GET();
+    if (httpCode > 0) {
+      Serial.printf("  [HTTP] GET... code: %d\n", httpCode);
+      if (httpCode == HTTP_CODE_OK || httpCode == HTTP_CODE_MOVED_PERMANENTLY) {
+        //String payload = http.getString();
+        //Serial.println(payload);
+        Serial.println("  [HTTP] Hotspot login successfully...");
+      }
+    } else {
+      Serial.printf("  [HTTP] GET... failed, error: %s\n", http.errorToString(httpCode).c_str());
+    }
+    http.end();
+  } else {
+    Serial.printf("  [HTTP} Unable to connect to hotspot\n");
+  }
+
+}
+
+void reconnect() {
+  while (!client.connected()) {
+    Serial.println("- Attempting MQTT connection...");
+    if (client.connect(mqtt_client_id,mqtt_user,mqtt_password)) {
+      Serial.println("  * already connected to WiFi");
+      // ... and resubscribe
+      subscribeToCommand();
+    } else {
+      Serial.print("failed, rc=");
+      Serial.print(client.state());
+      Serial.println(" try again in 5 seconds");
+      // Wait 5 seconds before retrying
+      delay(5000);
+    }
+  }
+}
+
+void subscribeToCommand() {
+  String topic = mqtt_topic;
+  client.subscribe(topic.c_str());
+  Serial.println("  * Subscribed on topic: " + topic);
+}
+void SendDataToMqtt(int value,const char* command){
+  StaticJsonBuffer<300> JSONbuffer;
+  JsonObject& JSONencoder = JSONbuffer.createObject();
+  JSONencoder[command] = value;
+  char JSONmessageBuffer[100];
+  JSONencoder.printTo(JSONmessageBuffer, sizeof(JSONmessageBuffer));
+  client.publish(mqtt_topic, JSONmessageBuffer);
+
+}
